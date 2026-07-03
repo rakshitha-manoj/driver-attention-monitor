@@ -216,3 +216,13 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# datasets (downloaded via Kaggle, not committed)
+data/
+
+# Mac junk files
+.DS_Store
+
+# environment
+.env
+venv/
