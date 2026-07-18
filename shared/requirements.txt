@@ -7,3 +7,15 @@ pygame
 pyttsx3
 matplotlib
 seaborn
+opencv-python
+mediapipe
+numpy
+pandas
+scikit-learn
+scikit-image
+matplotlib
+seaborn
+mlflow
+torch
+joblib
+scipy
