@@ -9,6 +9,13 @@ merging into a single shared instance at Week 6 integration, not now.
 Assumes Hafsa's file lives at perception/perception.py in the repo
 root (driver-attention-monitor/perception/perception.py). Adjust the
 sys.path line below if her filename or folder differs.
+
+Fix applied: yawn_rate now comes from a rolling YawnRateWindow instead
+of the raw lifetime perception.yawn_count. The old version fed a
+cumulative total into a rate-normalized scoring formula (max=5.0),
+which permanently maxed out the yawn score component after the 5th
+yawn of the whole session, even if the driver hadn't yawned in
+20 minutes.
 """
 
 import os
@@ -27,6 +34,7 @@ from calibrator import PoseCalibrator
 from nod_detector import NodDetector
 from distraction_detector import DistractionDetector
 from perclos import PerclosWindow
+from yawn_rate import YawnRateWindow  # NEW
 from scoring import compute_drowsiness_score
 from state_machine import DrowsinessStateMachine
 from alert_system import AlertSystem
@@ -52,8 +60,11 @@ calibrator = PoseCalibrator(calibration_duration=3.0)
 nod_detector = NodDetector()
 distraction_detector = DistractionDetector()
 perclos_window = PerclosWindow(window_seconds=60.0)
+yawn_rate_window = YawnRateWindow(window_seconds=60.0)  # NEW
 state_machine = DrowsinessStateMachine()
 alert_system = AlertSystem()
+
+_last_yawn_count = 0  # NEW -- tracks perception.yawn_count between frames to detect new yawns
 
 cap = cv2.VideoCapture(0)
 
@@ -79,6 +90,16 @@ while True:
         blink_duration = 0.0
 
     yawn_count = perception.yawn_count
+
+    # NEW -- convert the lifetime cumulative yawn_count into a rolling
+    # rate. Detect new yawns since last frame and feed each one into
+    # the window, so old yawns naturally age out after 60 seconds.
+    if yawn_count > _last_yawn_count:
+        for _ in range(yawn_count - _last_yawn_count):
+            yawn_rate_window.add_yawn(now)
+        _last_yawn_count = yawn_count
+
+    yawn_rate = yawn_rate_window.rate_per_minute(now)  # NEW
 
     # ---- Decision: head pose (own FaceMesh, decoupled from Perception) ----
     rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
@@ -115,7 +136,7 @@ while True:
 
     score, weights_used = compute_drowsiness_score(
         perclos=perclos,
-        yawn_rate=yawn_count,
+        yawn_rate=yawn_rate,  # CHANGED -- was yawn_count (cumulative), now yawn_rate (rolling)
         blink_duration=blink_duration,
         nod_count=nod_detector.nod_count,
         ear_confidence=ear_confidence,
@@ -130,7 +151,7 @@ while True:
         f"Nods: {nod_detector.nod_count}  Distraction: {distraction_flag}",
         f"EAR: {perception_output['EAR']}  MAR: {perception_output['MAR']}  "
         f"Conf: {ear_confidence}",
-        f"PERCLOS: {perclos * 100:.1f}%  Yawns: {yawn_count}  "
+        f"PERCLOS: {perclos * 100:.1f}%  Yawn rate: {yawn_rate:.1f}/min  "
         f"Score: {score:.1f}  State: {state}",
         "[q] quit",
     ]
