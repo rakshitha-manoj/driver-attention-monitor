@@ -1,7 +1,7 @@
 """
-LSTM classifier on sliding windows of [EAR, MAR, pitch, yaw].
-pitch/yaw are SYNTHETIC until Sheethal's head pose output is real.
-Sized conservatively for a 4GB VRAM card.
+LSTM classifier on sliding windows of [EAR, MAR, head_pitch, head_yaw].
+All four channels are now REAL (Sheethal's head pose is no longer
+synthetic). Sized conservatively for a 4GB VRAM card.
 """
 import numpy as np
 import pandas as pd
@@ -11,7 +11,6 @@ from torch.utils.data import Dataset, DataLoader
 from sklearn.model_selection import train_test_split
 from sklearn.metrics import accuracy_score, f1_score
 
-from synthetic_stubs import synthetic_head_pitch, synthetic_head_yaw
 from mlflow_utils import setup_experiment
 import mlflow
 
@@ -49,11 +48,7 @@ def build_sliding_windows(csv_path="nthu_features.csv"):
     df = pd.read_csv(csv_path)
     df["label_bin"] = (df["label"] == "drowsy").astype(int)
 
-    print("SYNTHETIC - injecting fake pitch/yaw channels for LSTM input")
-    df["head_pitch"] = synthetic_head_pitch(len(df), df["label_bin"].values)
-    df["head_yaw"] = synthetic_head_yaw(len(df))
-
-    feature_cols = ["EAR", "MAR", "head_pitch", "head_yaw"]
+    feature_cols = ["EAR", "MAR", "head_pitch", "head_yaw"]  # all real now
     windows, labels = [], []
 
     for subj, group in df.groupby("subject_id"):
@@ -82,11 +77,10 @@ def train():
     criterion = nn.BCELoss()
 
     setup_experiment("lstm_nthu")
-    with mlflow.start_run(run_name="lstm_v1"):
+    with mlflow.start_run(run_name="lstm_v2_real_features"):
         mlflow.log_params({
             "seq_len": SEQ_LEN, "hidden_size": HIDDEN_SIZE, "num_layers": NUM_LAYERS,
-            "batch_size": BATCH_SIZE, "epochs": EPOCHS,
-            "contains_synthetic_features": True, "features": feature_cols
+            "batch_size": BATCH_SIZE, "epochs": EPOCHS, "features": feature_cols
         })
 
         for epoch in range(EPOCHS):
@@ -118,8 +112,6 @@ def train():
         mlflow.log_metric("test_accuracy", acc)
         mlflow.log_metric("test_f1", f1)
         print(f"\nTest accuracy: {acc:.4f}  F1: {f1:.4f}")
-        print("REMINDER: this used SYNTHETIC pitch/yaw. Re-run once real head")
-        print("pose data exists before treating this as a final LSTM result.")
 
     torch.save(model.state_dict(), "lstm_model.pt")
     return model

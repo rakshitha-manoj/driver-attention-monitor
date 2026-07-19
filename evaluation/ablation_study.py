@@ -1,3 +1,12 @@
+"""
+4-condition ablation study - now fully real.
+
+Previously conditions 3 and 4 (headpose, all_four) used synthetic
+pitch/yaw/PERCLOS since Sheethal's Decision module wasn't built yet.
+Now that nthu_extraction.py produces real head_pitch, head_yaw, and
+PERCLOS columns from her actual logic, all 4 conditions run on real
+data. No synthetic_stubs import anywhere in this file.
+"""
 import numpy as np
 import pandas as pd
 from sklearn.svm import SVC
@@ -5,7 +14,6 @@ from sklearn.model_selection import train_test_split
 from sklearn.metrics import roc_curve, auc
 import matplotlib.pyplot as plt
 
-from synthetic_stubs import synthetic_head_pitch, synthetic_head_yaw, synthetic_perclos
 from mlflow_utils import setup_experiment
 import mlflow
 
@@ -21,13 +29,11 @@ def build_condition_features(df, condition):
         X["MAR"] = df["MAR"]
 
     if condition in ("ear_mar_headpose", "all_four"):
-        print("SYNTHETIC - injecting fake head pitch/yaw for 'headpose' condition")
-        X["head_pitch"] = synthetic_head_pitch(len(df), df["label_bin"].values)
-        X["head_yaw"] = synthetic_head_yaw(len(df))
+        X["head_pitch"] = df["head_pitch"]
+        X["head_yaw"] = df["head_yaw"]
 
     if condition == "all_four":
-        print("SYNTHETIC - injecting approximated PERCLOS for 'all_four' condition")
-        X["PERCLOS"] = synthetic_perclos(df["EAR"].values)
+        X["PERCLOS"] = df["PERCLOS"]
 
     return X.values
 
@@ -40,7 +46,6 @@ def run_ablation():
     results = {}
 
     for cond in conditions:
-        is_synthetic = cond in ("ear_mar_headpose", "all_four")
         X = build_condition_features(df, cond)
         y = df["label_bin"].values
 
@@ -55,27 +60,20 @@ def run_ablation():
         roc_auc = auc(fpr, tpr)
         results[cond] = roc_auc
 
-        label = f"{cond} (AUC={roc_auc:.3f})"
-        if is_synthetic:
-            label += " [SYNTHETIC inputs]"
-        ax.plot(fpr, tpr, label=label)
+        ax.plot(fpr, tpr, label=f"{cond} (AUC={roc_auc:.3f})")
 
         with mlflow.start_run(run_name=f"ablation_{cond}"):
             mlflow.log_param("condition", cond)
-            mlflow.log_param("contains_synthetic_features", is_synthetic)
             mlflow.log_metric("roc_auc", roc_auc)
 
     ax.plot([0, 1], [0, 1], linestyle="--", color="gray")
     ax.set_xlabel("False Positive Rate")
     ax.set_ylabel("True Positive Rate")
-    ax.set_title("Ablation study - signal combinations\n(dashed conditions use synthetic head pose/PERCLOS)")
-    ax.legend(fontsize=8)
+    ax.set_title("Ablation study - signal combinations (all real data)")
+    ax.legend(fontsize=9)
     plt.tight_layout()
     plt.savefig("ablation_roc_curves.png", dpi=150)
     print("\nResults:", results)
-    print("\nREMINDER: 'ear_mar_headpose' and 'all_four' conditions used SYNTHETIC")
-    print("head pose / PERCLOS data. Re-run once Sheethal's Decision module is real")
-    print("before reporting these two conditions as final results.")
 
     return results
 
