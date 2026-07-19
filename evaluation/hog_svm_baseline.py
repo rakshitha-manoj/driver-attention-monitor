@@ -3,14 +3,21 @@ import cv2
 import numpy as np
 from skimage.feature import hog
 from sklearn.svm import SVC
-from sklearn.model_selection import train_test_split
+from sklearn.model_selection import train_test_split, accuracy_score, f1_score
 
 from mlflow_utils import setup_experiment, log_classification_run
 import mlflow
 
-# ADJUST once you've inspected the actual CEW folder layout
-CEW_OPEN_DIR = "../data/cew/OpenFace"
-CEW_CLOSED_DIR = "../data/cew/ClosedFace"
+# Allow local file system tracking for MLflow
+os.environ["MLFLOW_ALLOW_FILE_STORE"] = "true"
+
+# --- ROBUST PATH FIX ---
+# Gets the absolute directory where this script actually sits (evaluation/)
+SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+
+# Resolves relative paths perfectly, regardless of where you call the command from
+CEW_OPEN_DIR = os.path.abspath(os.path.join(SCRIPT_DIR, "../data/cew/open"))
+CEW_CLOSED_DIR = os.path.abspath(os.path.join(SCRIPT_DIR, "../data/cew/closed"))
 IMG_SIZE = (64, 64)
 
 def extract_hog_features(img_path):
@@ -24,14 +31,30 @@ def extract_hog_features(img_path):
 
 def build_dataset():
     X, y = [], []
-    for p in glob.glob(os.path.join(CEW_OPEN_DIR, "*.jpg")):
+    
+    print(f"Checking Path: {CEW_OPEN_DIR} -> {'EXISTS' if os.path.exists(CEW_OPEN_DIR) else 'NOT FOUND'}")
+    print(f"Checking Path: {CEW_CLOSED_DIR} -> {'EXISTS' if os.path.exists(CEW_CLOSED_DIR) else 'NOT FOUND'}")
+
+    # Use recursive=True and '**/*.jpg' to catch images nested inside subdirectories
+    open_pattern = os.path.join(CEW_OPEN_DIR, "**", "*.jpg")
+    closed_pattern = os.path.join(CEW_CLOSED_DIR, "**", "*.jpg")
+    
+    open_paths = glob.glob(open_pattern, recursive=True)
+    closed_paths = glob.glob(closed_pattern, recursive=True)
+    
+    print(f"Found {len(open_paths)} open eye images.")
+    print(f"Found {len(closed_paths)} closed eye images.")
+    
+    for p in open_paths:
         f = extract_hog_features(p)
         if f is not None:
             X.append(f); y.append(1)  # open
-    for p in glob.glob(os.path.join(CEW_CLOSED_DIR, "*.jpg")):
+            
+    for p in closed_paths:
         f = extract_hog_features(p)
         if f is not None:
             X.append(f); y.append(0)  # closed
+            
     return np.array(X), np.array(y)
 
 def run_baseline():
@@ -50,18 +73,27 @@ def run_baseline():
     y_scores = clf.predict_proba(X_test)[:, 1]
 
     setup_experiment("hog_svm_cew")
-    metrics = log_classification_run(
-        run_name="hog_svm_baseline",
-        params={"kernel": "rbf", "C": 1.0, "img_size": IMG_SIZE, "n_train": len(X_train)},
-        y_true=y_test, y_pred=y_pred, y_scores=y_scores
-    )
 
     import joblib
     joblib.dump(clf, "hog_svm_model.pkl")
-    with mlflow.start_run(run_id=mlflow.last_active_run().info.run_id):
-        mlflow.log_artifact("hog_svm_model.pkl")
+    print("Successfully saved model locally to hog_svm_model.pkl")
 
-    return clf, metrics
+    # Log metrics AND the model artifact in the SAME run, no need to
+    # look up "last active run" after closing it
+    with mlflow.start_run(run_name="hog_svm_baseline") as run:
+        mlflow.log_params({"kernel": "rbf", "C": 1.0, "img_size": IMG_SIZE, "n_train": len(X_train)})
+
+        acc = accuracy_score(y_test, y_pred)
+        f1 = f1_score(y_test, y_pred)
+        mlflow.log_metric("accuracy", acc)
+        mlflow.log_metric("f1", f1)
+        print(f"[hog_svm_baseline] acc={acc:.4f}  f1={f1:.4f}")
+
+        mlflow.log_artifact("hog_svm_model.pkl")
+        print("Model artifact logged to MLflow successfully.")
+
+    return clf, {"accuracy": acc, "f1": f1}
+
 
 if __name__ == "__main__":
     run_baseline()
