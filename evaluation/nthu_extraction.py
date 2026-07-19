@@ -1,23 +1,16 @@
-"""
-NTHU feature extraction - full version.
-
-Replaces the earlier EAR/MAR-only extractor now that Sheethal's
-Decision module is real. Runs her actual HeadPoseEstimator,
-PoseCalibrator, NodDetector, DistractionDetector, PerclosWindow, and
-a YawnRateWindow (same pattern as her PERCLOS window) over each NTHU
-video, driven by a synthetic per-video timestamp instead of a live
-clock, since these are pre-recorded files, not a live camera feed.
-
-No synthetic/fake feature values anywhere in this file - every
-column is computed from her real logic running against real video.
-"""
 import sys, os, glob
 import cv2
 import pandas as pd
 import mediapipe as mp
 
-sys.path.append(os.path.join(os.path.dirname(__file__), "..", "perception"))
-sys.path.append(os.path.join(os.path.dirname(__file__), "..", "decision"))
+# --- ROBUST PATH FIX ---
+SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+NTHU_DIR = os.path.abspath(os.path.join(SCRIPT_DIR, "../data/nthu"))
+OUTPUT_CSV = os.path.abspath(os.path.join(SCRIPT_DIR, "nthu_features.csv"))
+
+# Append internal project folders to sys.path
+sys.path.append(os.path.abspath(os.path.join(SCRIPT_DIR, "..", "perception")))
+sys.path.append(os.path.abspath(os.path.join(SCRIPT_DIR, "..", "decision")))
 
 from perception import compute_ear, compute_mar, LEFT_EYE, RIGHT_EYE, MOUTH
 from head_pose import HeadPoseEstimator
@@ -28,10 +21,7 @@ from perclos import PerclosWindow
 from pose_sanity import is_plausible
 from yawn_rate import YawnRateWindow
 
-# ADJUST once you've inspected the actual NTHU folder layout
-NTHU_DIR = "../data/nthu"
-OUTPUT_CSV = "nthu_features.csv"
-FPS_ASSUMED = 30  # used to turn frame_id into a synthetic timestamp
+FPS_ASSUMED = 30  
 MAR_YAWN_THRESHOLD = 0.6
 
 face_mesh = mp.solutions.face_mesh.FaceMesh(
@@ -39,10 +29,8 @@ face_mesh = mp.solutions.face_mesh.FaceMesh(
     min_detection_confidence=0.5, min_tracking_confidence=0.5
 )
 
-def extract_from_video(video_path, label, subject_id):
-    cap = cv2.VideoCapture(video_path)
-
-    # fresh instances per video so calibration/state doesn't leak across subjects
+def extract_from_image_sequence(image_paths, label, sequence_name):
+    """Processes a list of sorted images as a single continuous chronological stream."""
     pose_estimator = HeadPoseEstimator()
     calibrator = PoseCalibrator(calibration_duration=3.0)
     nod_detector = NodDetector()
@@ -52,12 +40,13 @@ def extract_from_video(video_path, label, subject_id):
 
     rows = []
     frame_i = 0
-    yawn_state = False  # tracks MAR crossing edge, mirrors Hafsa's yawn-start logic
+    yawn_state = False  
 
-    while True:
-        ret, frame = cap.read()
-        if not ret:
-            break
+    for path in image_paths:
+        frame = cv2.imread(path)
+        if frame is None:
+            continue
+            
         frame_i += 1
         now = frame_i / FPS_ASSUMED
 
@@ -98,9 +87,13 @@ def extract_from_video(video_path, label, subject_id):
                 nod_count = nod_detector.update(pitch, yaw=yaw, roll=roll, now=now)
                 distraction_flag = distraction_detector.update(yaw, now)
 
+        # Try parsing out subject ID from filename e.g. "001_glasses..."
+        base_name = os.path.basename(path)
+        subject_id = f"subject_{base_name[0:3]}" if base_name[0:3].isdigit() else "unknown"
+
         rows.append({
             "subject_id": subject_id,
-            "video": os.path.basename(video_path),
+            "video": sequence_name,
             "frame_id": frame_i,
             "EAR": round(ear, 4),
             "MAR": round(mar, 4),
@@ -111,29 +104,50 @@ def extract_from_video(video_path, label, subject_id):
             "distraction_flag": distraction_flag,
             "PERCLOS": round(perclos, 4),
             "yawn_rate": round(yawn_window.rate_per_minute(now), 2),
-            "label": label,  # ADJUST: map from NTHU's actual annotation format
+            "label": label,
         })
-
-    cap.release()
+        
     return rows
 
 def run_extraction():
     all_rows = []
-    # ADJUST: assumes data/nthu/<subject_id>/<scenario>/<video>.avi
-    subject_dirs = glob.glob(os.path.join(NTHU_DIR, "*"))
-    for subj_dir in subject_dirs:
-        subject_id = os.path.basename(subj_dir)
-        videos = glob.glob(os.path.join(subj_dir, "**", "*.avi"), recursive=True)
-        for v in videos:
-            label = "drowsy" if "sleepy" in v.lower() else "alert"  # ADJUST
-            all_rows.extend(extract_from_video(v, label, subject_id))
-            print(f"  extracted {v}: running total {len(all_rows)} rows")
+    print(f"Target NTHU directory: {NTHU_DIR}")
+    
+    image_extensions = (".jpg", ".jpeg", ".png")
+    
+    # 1. FIND ALL DROWSY SUBFOLDERS
+    drowsy_base_dir = glob.glob(os.path.join(NTHU_DIR, "**", "drowsy"), recursive=True)
+    if drowsy_base_dir:
+        # Find directories inside the main drowsy folder (like yawning, slowBlinkWithNodding)
+        subdirs = [d for d in glob.glob(os.path.join(drowsy_base_dir[0], "*")) if os.path.isdir(d)]
+        
+        for subdir in subdirs:
+            seq_name = os.path.basename(subdir)
+            all_files = glob.glob(os.path.join(subdir, "*"))
+            images = sorted([f for f in all_files if f.lower().endswith(image_extensions)])
+            
+            if images:
+                print(f"Processing drowsy sequence [{seq_name}] with {len(images)} images...")
+                all_rows.extend(extract_from_image_sequence(images, "drowsy", f"drowsy_{seq_name}"))
+
+    # 2. FIND NOTDROWSY DIRECT FILES
+    notdrowsy_base_dir = glob.glob(os.path.join(NTHU_DIR, "**", "notdrowsy"), recursive=True)
+    if notdrowsy_base_dir:
+        all_files = glob.glob(os.path.join(notdrowsy_base_dir[0], "*"))
+        images = sorted([f for f in all_files if f.lower().endswith(image_extensions)])
+        
+        if images:
+            print(f"Processing alert sequence [notdrowsy] with {len(images)} images...")
+            all_rows.extend(extract_from_image_sequence(images, "alert", "notdrowsy_root"))
+
+    # 3. VERIFY AND WRITE
+    if len(all_rows) == 0:
+        print("Error: No data rows were extracted successfully. Check image paths.")
+        return None
 
     df = pd.DataFrame(all_rows)
     df.to_csv(OUTPUT_CSV, index=False)
     print(f"Saved {len(df)} rows to {OUTPUT_CSV}")
-    print("All columns are REAL - EAR/MAR (Hafsa's logic), head pose/nod/")
-    print("distraction/PERCLOS/yawn_rate (Sheethal's logic). No synthetic data.")
     return df
 
 if __name__ == "__main__":
