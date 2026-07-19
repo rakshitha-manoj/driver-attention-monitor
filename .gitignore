@@ -226,3 +226,5 @@ data/
 # environment
 .env
 venv/
+
+mlruns/
