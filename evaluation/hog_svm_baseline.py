@@ -8,11 +8,10 @@ from sklearn.model_selection import train_test_split
 from mlflow_utils import setup_experiment, log_classification_run
 import mlflow
 
-# --- ROBUST PATH FIX ---
-# Gets the absolute directory where this script actually sits (evaluation/)
-SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+os.environ["MLFLOW_ALLOW_FILE_STORE"] = "true"
 
-# Resolves relative paths perfectly, regardless of where you call the command from
+# --- ROBUST PATH FIX ---
+SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 CEW_OPEN_DIR = os.path.abspath(os.path.join(SCRIPT_DIR, "../data/cew/open"))
 CEW_CLOSED_DIR = os.path.abspath(os.path.join(SCRIPT_DIR, "../data/cew/closed"))
 IMG_SIZE = (64, 64)
@@ -29,11 +28,9 @@ def extract_hog_features(img_path):
 def build_dataset():
     X, y = [], []
     
-    # Verify directories exist before searching
     print(f"Checking Path: {CEW_OPEN_DIR} -> {'EXISTS' if os.path.exists(CEW_OPEN_DIR) else 'NOT FOUND'}")
     print(f"Checking Path: {CEW_CLOSED_DIR} -> {'EXISTS' if os.path.exists(CEW_CLOSED_DIR) else 'NOT FOUND'}")
 
-    # Use recursive=True and '**/*.jpg' to catch images nested inside subdirectories
     open_pattern = os.path.join(CEW_OPEN_DIR, "**", "*.jpg")
     closed_pattern = os.path.join(CEW_CLOSED_DIR, "**", "*.jpg")
     
@@ -46,12 +43,12 @@ def build_dataset():
     for p in open_paths:
         f = extract_hog_features(p)
         if f is not None:
-            X.append(f); y.append(1)  # open
+            X.append(f); y.append(1)
             
     for p in closed_paths:
         f = extract_hog_features(p)
         if f is not None:
-            X.append(f); y.append(0)  # closed
+            X.append(f); y.append(0)
             
     return np.array(X), np.array(y)
 
@@ -59,7 +56,6 @@ def run_baseline():
     print("Extracting HOG features...")
     X, y = build_dataset()
     
-    # Safeguard to stop execution before the IndexError tuple crash happens
     if X.ndim < 2 or X.shape[0] == 0:
         print("\nError: Dataset array is empty! Feature matrix cannot be split.")
         print("Please check if the printed paths above actually contain files.")
@@ -71,32 +67,36 @@ def run_baseline():
         X, y, test_size=0.2, random_state=42, stratify=y
     )
 
-    clf = SVC(kernel="rbf", C=1.0, probability=True, random_state=42, verbose=True)
+    # Performance optimization: probability=False and cache_size=2000
+    clf = SVC(kernel="rbf", C=1.0, probability=False, cache_size=2000, random_state=42, verbose=True)
     
-    print("Training SVM classifier (this might take a few minutes)...")
+    print("Training SVM classifier (optimization process running)...")
     clf.fit(X_train, y_train)
     print("Training complete!")
 
-    # --- SAVE PKL IMMEDIATELY TO AVOID LOSS ---
     import joblib
     model_path = "hog_svm_model.pkl"
     joblib.dump(clf, model_path)
     print(f"Successfully saved model locally to: {os.path.abspath(model_path)}")
 
-    # --- EVALUATION AND MLFLOW ---
     print("Running evaluation...")
     y_pred = clf.predict(X_test)
-    y_scores = clf.predict_proba(X_test)[:, 1]
+    
+    # Using decision_function boundary distances since probability=False
+    y_scores = clf.decision_function(X_test)
 
     try:
         setup_experiment("hog_svm_cew")
-        metrics = log_classification_run(
+        
+        # Unpack both the run context and the metrics dictionary cleanly
+        active_run, metrics = log_classification_run(
             run_name="hog_svm_baseline",
             params={"kernel": "rbf", "C": 1.0, "img_size": IMG_SIZE, "n_train": len(X_train)},
             y_true=y_test, y_pred=y_pred, y_scores=y_scores
         )
 
-        with mlflow.start_run(run_id=mlflow.last_active_run().info.run_id):
+        # Log artifact using the explicit run tracking token
+        with mlflow.start_run(run_id=active_run.info.run_id):
             mlflow.log_artifact(model_path)
         print("Logged metrics and model to MLflow successfully.")
     except Exception as e:

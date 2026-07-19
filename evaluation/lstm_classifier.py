@@ -1,0 +1,128 @@
+"""
+LSTM classifier on sliding windows of [EAR, MAR, pitch, yaw].
+pitch/yaw are SYNTHETIC until Sheethal's head pose output is real.
+Sized conservatively for a 4GB VRAM card.
+"""
+import numpy as np
+import pandas as pd
+import torch
+import torch.nn as nn
+from torch.utils.data import Dataset, DataLoader
+from sklearn.model_selection import train_test_split
+from sklearn.metrics import accuracy_score, f1_score
+
+from synthetic_stubs import synthetic_head_pitch, synthetic_head_yaw
+from mlflow_utils import setup_experiment
+import mlflow
+
+SEQ_LEN = 30
+HIDDEN_SIZE = 32
+NUM_LAYERS = 2
+BATCH_SIZE = 16
+EPOCHS = 15
+DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
+
+class WindowDataset(Dataset):
+    def __init__(self, features, labels):
+        self.features = features
+        self.labels = labels
+    def __len__(self):
+        return len(self.labels)
+    def __getitem__(self, idx):
+        return torch.tensor(self.features[idx], dtype=torch.float32), \
+               torch.tensor(self.labels[idx], dtype=torch.float32)
+
+class DrowsinessLSTM(nn.Module):
+    def __init__(self, input_size, hidden_size=HIDDEN_SIZE, num_layers=NUM_LAYERS):
+        super().__init__()
+        self.lstm = nn.LSTM(input_size, hidden_size, num_layers,
+                             batch_first=True, dropout=0.2 if num_layers > 1 else 0)
+        self.fc = nn.Linear(hidden_size, 1)
+        self.sigmoid = nn.Sigmoid()
+
+    def forward(self, x):
+        out, (h_n, _) = self.lstm(x)
+        last_hidden = h_n[-1]
+        return self.sigmoid(self.fc(last_hidden)).squeeze(-1)
+
+def build_sliding_windows(csv_path="nthu_features.csv"):
+    df = pd.read_csv(csv_path)
+    df["label_bin"] = (df["label"] == "drowsy").astype(int)
+
+    print("SYNTHETIC - injecting fake pitch/yaw channels for LSTM input")
+    df["head_pitch"] = synthetic_head_pitch(len(df), df["label_bin"].values)
+    df["head_yaw"] = synthetic_head_yaw(len(df))
+
+    feature_cols = ["EAR", "MAR", "head_pitch", "head_yaw"]
+    windows, labels = [], []
+
+    for subj, group in df.groupby("subject_id"):
+        group = group.sort_values("frame_id")
+        feats = group[feature_cols].values
+        labs = group["label_bin"].values
+        for i in range(len(feats) - SEQ_LEN):
+            windows.append(feats[i:i+SEQ_LEN])
+            labels.append(1 if labs[i:i+SEQ_LEN].mean() > 0.5 else 0)
+
+    return np.array(windows), np.array(labels), feature_cols
+
+def train():
+    X, y, feature_cols = build_sliding_windows()
+    print(f"Built {len(X)} windows of shape {X.shape[1:]}")
+
+    X_train, X_test, y_train, y_test = train_test_split(
+        X, y, test_size=0.2, random_state=42, stratify=y
+    )
+
+    train_loader = DataLoader(WindowDataset(X_train, y_train), batch_size=BATCH_SIZE, shuffle=True)
+    test_loader = DataLoader(WindowDataset(X_test, y_test), batch_size=BATCH_SIZE)
+
+    model = DrowsinessLSTM(input_size=len(feature_cols)).to(DEVICE)
+    optimizer = torch.optim.Adam(model.parameters(), lr=1e-3)
+    criterion = nn.BCELoss()
+
+    setup_experiment("lstm_nthu")
+    with mlflow.start_run(run_name="lstm_v1"):
+        mlflow.log_params({
+            "seq_len": SEQ_LEN, "hidden_size": HIDDEN_SIZE, "num_layers": NUM_LAYERS,
+            "batch_size": BATCH_SIZE, "epochs": EPOCHS,
+            "contains_synthetic_features": True, "features": feature_cols
+        })
+
+        for epoch in range(EPOCHS):
+            model.train()
+            total_loss = 0
+            for xb, yb in train_loader:
+                xb, yb = xb.to(DEVICE), yb.to(DEVICE)
+                optimizer.zero_grad()
+                preds = model(xb)
+                loss = criterion(preds, yb)
+                loss.backward()
+                optimizer.step()
+                total_loss += loss.item()
+            avg_loss = total_loss / len(train_loader)
+            mlflow.log_metric("train_loss", avg_loss, step=epoch)
+            print(f"Epoch {epoch+1}/{EPOCHS}  loss={avg_loss:.4f}")
+
+        model.eval()
+        all_preds, all_labels = [], []
+        with torch.no_grad():
+            for xb, yb in test_loader:
+                xb = xb.to(DEVICE)
+                preds = model(xb).cpu().numpy()
+                all_preds.extend((preds > 0.5).astype(int))
+                all_labels.extend(yb.numpy())
+
+        acc = accuracy_score(all_labels, all_preds)
+        f1 = f1_score(all_labels, all_preds)
+        mlflow.log_metric("test_accuracy", acc)
+        mlflow.log_metric("test_f1", f1)
+        print(f"\nTest accuracy: {acc:.4f}  F1: {f1:.4f}")
+        print("REMINDER: this used SYNTHETIC pitch/yaw. Re-run once real head")
+        print("pose data exists before treating this as a final LSTM result.")
+
+    torch.save(model.state_dict(), "lstm_model.pt")
+    return model
+
+if __name__ == "__main__":
+    train()

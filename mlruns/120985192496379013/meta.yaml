@@ -1,0 +1,9 @@
+artifact_location: file:///D:/Trimester_4/driver-attention-monitor/mlruns/120985192496379013
+creation_time: 1784405824694
+effective_trace_archival_retention: null
+experiment_id: '120985192496379013'
+last_update_time: 1784405824694
+lifecycle_stage: active
+name: hog_svm_cew
+trace_location: null
+workspace: default

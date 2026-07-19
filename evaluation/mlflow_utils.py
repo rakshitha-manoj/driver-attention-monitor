@@ -1,8 +1,12 @@
+import os
 import mlflow
 import matplotlib.pyplot as plt
 from sklearn.metrics import confusion_matrix, roc_curve, auc, f1_score, accuracy_score
 import seaborn as sns
 import numpy as np
+
+# Force MLflow to accept local filesystem tracking
+os.environ["MLFLOW_ALLOW_FILE_STORE"] = "true"
 
 def setup_experiment(experiment_name):
     mlflow.set_tracking_uri("file:./mlruns")
@@ -10,7 +14,8 @@ def setup_experiment(experiment_name):
 
 def log_classification_run(run_name, params, y_true, y_pred, y_scores=None):
     """Logs params, metrics, confusion matrix, and ROC curve (if scores given) to MLflow."""
-    with mlflow.start_run(run_name=run_name):
+    # Return the run object so external scripts can access the exact run_id cleanly
+    with mlflow.start_run(run_name=run_name) as run:
         mlflow.log_params(params)
 
         acc = accuracy_score(y_true, y_pred)
@@ -43,4 +48,6 @@ def log_classification_run(run_name, params, y_true, y_pred, y_scores=None):
             plt.close(fig2)
 
         print(f"[{run_name}] acc={acc:.4f}  f1={f1:.4f}")
-        return {"accuracy": acc, "f1": f1}
+        
+        # Packing both the calculated metrics and the run object for the baseline script
+        return run, {"accuracy": acc, "f1": f1}
