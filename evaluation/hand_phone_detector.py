@@ -1,48 +1,43 @@
 """
-Hand-near-face / phone-use detector - manual distraction signal.
-Uses MediaPipe Hands (a separate model from Face Mesh) to detect when
-a hand is raised near the ear/face region, a classic phone-call
-gesture. Covers "manual distraction" (hand off wheel, phone use), a
-category neither Hafsa's (eye/mouth state) nor Sheethal's (head pose)
-work touches - a genuinely new modality.
+Advanced Distraction Monitor v15 - YOLO Deep Learning Fusion Edition.
+Uses YOLOv8 to explicitly detect the presence of a phone object before checking
+spatial regions relative to the face mesh, eliminating skeleton false positives.
+
+Press F to toggle fullscreen, Q to quit.
 """
 import cv2
 import numpy as np
 import mediapipe as mp
+from ultralytics import YOLO
 
-mp_hands = mp.solutions.hands
+# Initialize Deep Learning Object Detector
+# Natively trained on COCO dataset; Class ID 67 corresponds exactly to 'cell phone'
+yolo_model = YOLO('yolov8n.pt') 
+
 mp_face_mesh = mp.solutions.face_mesh
-mp_drawing = mp.solutions.drawing_utils
-
-hands = mp_hands.Hands(
-    max_num_hands=2, min_detection_confidence=0.6, min_tracking_confidence=0.5
-)
 face_mesh = mp_face_mesh.FaceMesh(
     static_image_mode=False, max_num_faces=1, refine_landmarks=True,
-    min_detection_confidence=0.5, min_tracking_confidence=0.5
+    min_detection_confidence=0.6, min_tracking_confidence=0.6
 )
 
-LEFT_EAR_REGION = 234
-RIGHT_EAR_REGION = 454
-NEAR_FACE_THRESHOLD_RATIO = 0.35
+# Core Facemesh Indices
+NOSE = 1
+CHIN = 152
+LEFT_EAR = 234
+RIGHT_EAR = 454
+FOREHEAD = 10
 
-WINDOW_NAME = "Hand-Near-Face Detector"
+WINDOW_NAME = "YOLO Deep Learning Fusion Monitor"
 
-def get_point(landmarks, idx, w, h):
-    lm = landmarks[idx]
+def get_pixel_2d(lm, w, h):
     return np.array([lm.x * w, lm.y * h])
 
-def hand_center(hand_landmarks, w, h):
-    pts = np.array([[lm.x * w, lm.y * h] for lm in hand_landmarks.landmark])
-    return pts.mean(axis=0)
-
-def run_hand_detector():
+def run_fusion_monitor():
     cap = cv2.VideoCapture(0)
     cv2.namedWindow(WINDOW_NAME, cv2.WINDOW_NORMAL)
     fullscreen = False
 
-    near_face_streak = 0
-    print("Live hand-near-face / phone-use detector running. Press Q to quit, F for fullscreen.")
+    print("Loading YOLOv8 network and starting stream...")
 
     while True:
         ret, frame = cap.read()
@@ -50,58 +45,77 @@ def run_hand_detector():
             break
 
         h, w = frame.shape[:2]
+        frame = cv2.flip(frame, 1) # Natural mirroring
+        
+        # 1. RUN YOLO OBJECT DETECTION INFERENCE
+        # verbose=False keeps the console clean during real-time loops
+        yolo_results = yolo_model(frame, verbose=False)[0]
+        
+        phone_boxes = []
+        for box in yolo_results.boxes:
+            class_id = int(box.cls[0])
+            confidence = float(box.conf[0])
+            
+            # Filter specifically for 'cell phone' with a reliable confidence floor
+            if class_id == 67 and confidence > 0.45:
+                # Extract pixel bounding coordinates [x_min, y_min, x_max, y_max]
+                xyxy = box.xyxy[0].cpu().numpy().astype(int)
+                phone_boxes.append(xyxy)
+                
+                # Draw visual target locator box over the detected device
+                cv2.rectangle(frame, (xyxy[0], xyxy[1]), (xyxy[2], xyxy[3]), (0, 255, 255), 2)
+                cv2.putText(frame, f"Phone {confidence:.2f}", (xyxy[0], xyxy[1] - 5),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 255), 1)
+
+        # 2. RUN FACEMESH BOUNDARY EXTRACTION
         rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-
         face_results = face_mesh.process(rgb)
-        hand_results = hands.process(rgb)
 
-        hand_near_face = False
-        face_width = None
+        phone_call = False
+        low_texting = False
 
-        if face_results.multi_face_landmarks:
+        if face_results.multi_face_landmarks and len(phone_boxes) > 0:
             landmarks = face_results.multi_face_landmarks[0].landmark
-            left_ear = get_point(landmarks, LEFT_EAR_REGION, w, h)
-            right_ear = get_point(landmarks, RIGHT_EAR_REGION, w, h)
-            face_width = np.linalg.norm(right_ear - left_ear)
+            
+            nose_2d = get_pixel_2d(landmarks[NOSE], w, h)
+            chin_2d = get_pixel_2d(landmarks[CHIN], w, h)
+            left_ear_2d = get_pixel_2d(landmarks[LEFT_EAR], w, h)
+            right_ear_2d = get_pixel_2d(landmarks[RIGHT_EAR], w, h)
+            forehead_2d = get_pixel_2d(landmarks[FOREHEAD], w, h)
 
-            cv2.circle(frame, tuple(left_ear.astype(int)), 4, (0, 200, 255), -1)
-            cv2.circle(frame, tuple(right_ear.astype(int)), 4, (0, 200, 255), -1)
+            face_width = np.linalg.norm(right_ear_2d - left_ear_2d)
+            face_height = np.linalg.norm(chin_2d - forehead_2d)
 
-            if hand_results.multi_hand_landmarks and face_width:
-                threshold_px = face_width * (1 + NEAR_FACE_THRESHOLD_RATIO)
-                for hand_landmarks in hand_results.multi_hand_landmarks:
-                    mp_drawing.draw_landmarks(frame, hand_landmarks, mp_hands.HAND_CONNECTIONS)
-                    hc = hand_center(hand_landmarks, w, h)
-                    dist_left = np.linalg.norm(hc - left_ear)
-                    dist_right = np.linalg.norm(hc - right_ear)
-                    if min(dist_left, dist_right) < threshold_px:
-                        hand_near_face = True
-                        cv2.putText(frame, "HAND NEAR FACE", tuple(hc.astype(int)),
-                                    cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255), 2)
+            # Draw localization vector guides
+            cv2.line(frame, tuple(left_ear_2d.astype(int)), tuple(right_ear_2d.astype(int)), (255, 255, 0), 1)
+            cv2.line(frame, tuple(chin_2d.astype(int)), tuple(forehead_2d.astype(int)), (255, 255, 0), 1)
 
-        elif hand_results.multi_hand_landmarks:
-            for hand_landmarks in hand_results.multi_hand_landmarks:
-                mp_drawing.draw_landmarks(frame, hand_landmarks, mp_hands.HAND_CONNECTIONS)
+            # 3. SPATIAL FUSION LAYER
+            for box in phone_boxes:
+                # Calculate the center coordinate of the phone object bounding box
+                phone_center = np.array([(box[0] + box[2]) / 2.0, (box[1] + box[3]) / 2.0])
 
-        if hand_near_face:
-            near_face_streak += 1
-        else:
-            near_face_streak = 0
+                dist_to_left_ear = np.linalg.norm(phone_center - left_ear_2d)
+                dist_to_right_ear = np.linalg.norm(phone_center - right_ear_2d)
 
-        sustained_alert = near_face_streak > 30
+                # Sector A: Phone is located in close proximity to either ear channel
+                if min(dist_to_left_ear, dist_to_right_ear) < (face_width * 0.95) and phone_center[1] < chin_2d[1]:
+                    phone_call = True
+                    break
+                
+                # Sector B: Phone is detected operating below the nose line
+                elif phone_center[1] > (nose_2d[1] - face_height * 0.2):
+                    low_texting = True
 
-        status_label = "PHONE / HAND NEAR FACE" if hand_near_face else "HANDS CLEAR"
-        status_color = (0, 0, 255) if hand_near_face else (0, 255, 0)
-        cv2.putText(frame, f"STATUS: {status_label}", (10, 30),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.75, status_color, 2)
-
-        if sustained_alert:
+        # 4. MONITOR UI LAYER GENERATION
+        if phone_call or low_texting:
             cv2.rectangle(frame, (0, 0), (w, h), (0, 0, 255), 8)
-            cv2.putText(frame, "SUSTAINED MANUAL DISTRACTION",
-                        (10, h - 20), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255), 2)
+            msg = "CRITICAL: PHONE CALL DETECTED" if phone_call else "CRITICAL: LOW TEXTING DETECTED"
+            cv2.putText(frame, msg, (10, h - 20), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
 
-        cv2.putText(frame, "Hand/Phone Detector - Raks (manual distraction) | F=fullscreen Q=quit",
-                    (10, h - 45), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 200, 0), 2)
+        status_txt = "DISTRACTION DETECTED" if (phone_call or low_texting) else "SYSTEM CLEAR"
+        status_color = (0, 0, 255) if (phone_call or low_texting) else (0, 255, 0)
+        cv2.putText(frame, f"STATUS: {status_txt}", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.75, status_color, 2)
 
         cv2.imshow(WINDOW_NAME, frame)
         key = cv2.waitKey(1) & 0xFF
@@ -116,4 +130,4 @@ def run_hand_detector():
     cv2.destroyAllWindows()
 
 if __name__ == "__main__":
-    run_hand_detector()
+    run_fusion_monitor()

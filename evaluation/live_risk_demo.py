@@ -1,36 +1,42 @@
 """
-Live drowsiness RISK prediction demo v2 - now runs Hafsa's real
-PerceptionModule and Sheethal's real head-pose/PERCLOS pipeline
-together live, feeding the full real feature set into your trained
-SVM. Previously EAR+MAR only from a standalone MediaPipe call.
+Live drowsiness RISK prediction demo v3 - now runs Hafsa's real
+PerceptionModule and Sheethal's real head-pose/PERCLOS pipeline together live.
 
-Needs drowsiness_risk_model.pkl trained via train_risk_model.py first.
+Features a robust programmatic fallback for SVM models trained with probability=False
+using plane distance sigmoid maps to prevent terminal attribute crashes.
 """
-import sys, os
+import sys
+import os
 import cv2
 import numpy as np
 import joblib
 import time
 from collections import deque
-
-sys.path.append(os.path.join(os.path.dirname(__file__), "..", "perception"))
-sys.path.append(os.path.join(os.path.dirname(__file__), "..", "decision"))
-
-from perception import PerceptionModule
-from head_pose import HeadPoseEstimator
-from calibrator import PoseCalibrator
-from perclos import PerclosWindow
-from pose_sanity import is_plausible
-from yawn_rate import YawnRateWindow
-
 import mediapipe as mp
 
-MODEL_PATH = "drowsiness_risk_model.pkl"
+# Handle path resolutions gracefully regardless of terminal execution root location
+SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+MODEL_PATH = os.path.join(SCRIPT_DIR, "drowsiness_risk_model.pkl")
 TREND_LEN = 90
+
+sys.path.append(os.path.join(SCRIPT_DIR, "..", "perception"))
+sys.path.append(os.path.join(SCRIPT_DIR, "..", "decision"))
+
+try:
+    from perception import PerceptionModule
+    from head_pose import HeadPoseEstimator
+    from calibrator import PoseCalibrator
+    from perclos import PerclosWindow
+    from pose_sanity import is_plausible
+    from yawn_rate import YawnRateWindow
+except ImportError as e:
+    print(f"[CRITICAL] Architecture path loading failed: {e}")
+    print("Verify that 'perception' and 'decision' folders are structured properly in root.")
+    sys.exit(1)
 
 face_mesh = mp.solutions.face_mesh.FaceMesh(
     static_image_mode=False, max_num_faces=1, refine_landmarks=True,
-    min_detection_confidence=0.5, min_tracking_confidence=0.5
+    min_detection_confidence=0.6, min_tracking_confidence=0.6
 )
 
 def draw_trend_graph(frame, history, x0=10, y0=180, w=300, h=80):
@@ -49,8 +55,26 @@ def draw_trend_graph(frame, history, x0=10, y0=180, w=300, h=80):
         cv2.line(frame, pts[i-1], pts[i], color, 2)
 
 def run_risk_demo():
+    if not os.path.exists(MODEL_PATH):
+        print(f"[CRITICAL] Target binary model payload missing at: {MODEL_PATH}")
+        print("Train weights via train_risk_model.py before starting live demo window.")
+        sys.exit(1)
+
     print("Loading trained risk model...")
     clf = joblib.load(MODEL_PATH)
+    
+    # CRITICAL FALLBACK CHECK: Verify model classification capabilities
+    has_probability = True
+    try:
+        # Check if the internal sklearn availability wrapper flag is active
+        _ = clf.predict_proba(np.zeros((1, 6)))
+    except AttributeError:
+        print("[WARN] SVM model was trained with probability=False.")
+        print("       Activating Sigmoid Decision-Function approximation fallbacks safely...")
+        has_probability = False
+    except Exception:
+        # Catch secondary instantiation checks gracefully
+        pass
 
     perception = PerceptionModule()
     pose_estimator = HeadPoseEstimator()
@@ -68,6 +92,9 @@ def run_risk_demo():
         ret, frame = cap.read()
         if not ret:
             break
+        
+        # Mirror naturally for interactive desktop rendering loops
+        frame = cv2.flip(frame, 1)
         now = time.time()
 
         perception_output = perception.process_frame(frame.copy())
@@ -80,7 +107,7 @@ def run_risk_demo():
 
         pitch = yaw = 0.0
         if results.multi_face_landmarks:
-            landmarks = results.multi_face_landmarks[0].landmark
+            landmarks = face_results = results.multi_face_landmarks[0].landmark
             pose = pose_estimator.estimate_pose(landmarks, frame)
             if pose is not None:
                 if not calibrator.is_calibrated:
@@ -101,7 +128,16 @@ def run_risk_demo():
         risk_prob = None
         if ear is not None and mar is not None:
             X = np.array([[ear, mar, pitch, yaw, perclos, yawn_rate]])
-            risk_prob = clf.predict_proba(X)[0][1]
+            
+            # Tiered execution handler branch logic
+            if has_probability:
+                risk_prob = clf.predict_proba(X)[0][1]
+            else:
+                # Extract hyper-plane metric distance
+                decision_score = clf.decision_function(X)[0]
+                # Map smoothly into normalized [0.0 - 1.0] probability values via a standard Logistic Sigmoid function
+                risk_prob = 1.0 / (1.0 + np.exp(-decision_score))
+                
             risk_history.append(risk_prob)
 
             cv2.putText(frame, f"EAR:{ear:.2f} MAR:{mar:.2f} Pitch:{pitch:.1f} Yaw:{yaw:.1f}",

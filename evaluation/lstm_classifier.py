@@ -3,6 +3,7 @@ LSTM classifier on sliding windows of [EAR, MAR, head_pitch, head_yaw].
 All four channels are now REAL (Sheethal's head pose is no longer
 synthetic). Sized conservatively for a 4GB VRAM card.
 """
+import os
 import numpy as np
 import pandas as pd
 import torch
@@ -11,8 +12,19 @@ from torch.utils.data import Dataset, DataLoader
 from sklearn.model_selection import train_test_split
 from sklearn.metrics import accuracy_score, f1_score
 
+# Set the environment variable immediately before any MLflow initializations
+os.environ["MLFLOW_ALLOW_FILE_STORE"] = "true"
+
 from mlflow_utils import setup_experiment
 import mlflow
+
+# --- ROBUST PATH FIX ---
+# Gets the absolute directory where this classifier script sits (evaluation/)
+SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+
+# Resolves absolute paths perfectly relative to the script location
+CSV_PATH = os.path.abspath(os.path.join(SCRIPT_DIR, "nthu_features.csv"))
+MODEL_SAVE_PATH = os.path.abspath(os.path.join(SCRIPT_DIR, "lstm_model.pt"))
 
 SEQ_LEN = 30
 HIDDEN_SIZE = 32
@@ -44,11 +56,15 @@ class DrowsinessLSTM(nn.Module):
         last_hidden = h_n[-1]
         return self.sigmoid(self.fc(last_hidden)).squeeze(-1)
 
-def build_sliding_windows(csv_path="nthu_features.csv"):
+def build_sliding_windows(csv_path=CSV_PATH):
+    print(f"Loading features from: {csv_path}")
+    if not os.path.exists(csv_path) or os.path.getsize(csv_path) == 0:
+        raise FileNotFoundError(f"Error: {csv_path} is missing or empty. Please run nthu_extraction.py completely first.")
+
     df = pd.read_csv(csv_path)
     df["label_bin"] = (df["label"] == "drowsy").astype(int)
 
-    feature_cols = ["EAR", "MAR", "head_pitch", "head_yaw"]  # all real now
+    feature_cols = ["EAR", "MAR", "head_pitch", "head_yaw"]  # all real channels
     windows, labels = [], []
 
     for subj, group in df.groupby("subject_id"):
@@ -77,7 +93,7 @@ def train():
     criterion = nn.BCELoss()
 
     setup_experiment("lstm_nthu")
-    with mlflow.start_run(run_name="lstm_v2_real_features"):
+    with mlflow.start_run(run_name="lstm_v2_real_features") as run:
         mlflow.log_params({
             "seq_len": SEQ_LEN, "hidden_size": HIDDEN_SIZE, "num_layers": NUM_LAYERS,
             "batch_size": BATCH_SIZE, "epochs": EPOCHS, "features": feature_cols
@@ -113,7 +129,12 @@ def train():
         mlflow.log_metric("test_f1", f1)
         print(f"\nTest accuracy: {acc:.4f}  F1: {f1:.4f}")
 
-    torch.save(model.state_dict(), "lstm_model.pt")
+        # Save weights and log directly to active MLflow context session
+        torch.save(model.state_dict(), MODEL_SAVE_PATH)
+        print(f"Saved model weights locally to {MODEL_SAVE_PATH}")
+        mlflow.log_artifact(MODEL_SAVE_PATH)
+        print("Model artifact logged to MLflow successfully.")
+
     return model
 
 if __name__ == "__main__":
