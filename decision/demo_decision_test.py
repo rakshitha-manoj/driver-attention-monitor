@@ -29,6 +29,8 @@ from scoring import compute_drowsiness_score
 from state_machine import DrowsinessStateMachine
 from alert_system import AlertSystem
 from pose_sanity import is_plausible
+from face_loss_detector import FaceLossDetector
+from nod_rate import NodRateWindow
 
 
 mp_face_mesh = mp.solutions.face_mesh
@@ -50,6 +52,10 @@ distraction_detector = DistractionDetector()
 perclos_window = PerclosWindow(window_seconds=60.0)
 state_machine = DrowsinessStateMachine()
 alert_system = AlertSystem()
+face_loss_detector = FaceLossDetector(loss_threshold_seconds=2.0)
+nod_rate_window = NodRateWindow(window_seconds=60.0)
+NOD_ALERT_THRESHOLD = 3  # nods within the window to trigger the sticky alert
+_last_nod_count = 0
 
 # --- simulated Perception output -- intentional for this lightweight
 # harness. For real EAR/MAR/yawn/blink data, use integrated_demo.py ---
@@ -72,6 +78,7 @@ while True:
 
     pitch = yaw = roll = 0.0
     distraction_flag = False
+    face_detected = bool(results.multi_face_landmarks)
 
     if results.multi_face_landmarks:
         for face_landmarks in results.multi_face_landmarks:
@@ -94,7 +101,7 @@ while True:
 
                 if is_plausible(pitch, yaw, roll):
                     nod_detector.update(pitch, yaw=yaw, roll=roll, now=now)
-                    distraction_flag = distraction_detector.update(yaw, now)
+                    distraction_flag = distraction_detector.update(yaw, pitch=pitch, now=now)
                 # else: bad frame (likely face partially out of view) --
                 # skip updating either detector rather than trust it
 
@@ -108,11 +115,23 @@ while True:
         ear_confidence=1.0,
     )
 
+    face_lost_alert = face_loss_detector.update(face_detected, now)
+
+    if nod_detector.nod_count > _last_nod_count:
+        for _ in range(nod_detector.nod_count - _last_nod_count):
+            nod_rate_window.add_nod(now)
+        _last_nod_count = nod_detector.nod_count
+
+    drowsy_nod_alert = nod_rate_window.count_recent(now) >= NOD_ALERT_THRESHOLD
+
     state = state_machine.update(score, now)
-    frame, alert_fired = alert_system.update(frame, state, distraction_flag)
+    frame, alert_fired = alert_system.update(frame, state, distraction_flag,
+                                              face_lost_alert, drowsy_nod_alert, now)
 
     hud_lines = [
         f"Pitch: {pitch:.1f}  Yaw: {yaw:.1f}  Roll: {roll:.1f}",
+        f"Nods: {nod_detector.nod_count}  Distraction: {distraction_flag}"
+        f" ({distraction_detector.distraction_axis})" if distraction_flag else
         f"Nods: {nod_detector.nod_count}  Distraction: {distraction_flag}",
         f"PERCLOS: {perclos * 100:.1f}%  Score: {score:.1f}  State: {state}",
         "[c] toggle simulated eye-closed   [q] quit",

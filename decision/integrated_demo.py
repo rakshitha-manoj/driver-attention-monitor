@@ -34,11 +34,15 @@ from calibrator import PoseCalibrator
 from nod_detector import NodDetector
 from distraction_detector import DistractionDetector
 from perclos import PerclosWindow
-from yawn_rate import YawnRateWindow  # NEW
+from yawn_rate import YawnRateWindow
 from scoring import compute_drowsiness_score
 from state_machine import DrowsinessStateMachine
 from alert_system import AlertSystem
 from pose_sanity import is_plausible
+from face_loss_detector import FaceLossDetector
+from output_contract import build_output_dict
+from decision_logger import DecisionLogger
+from nod_rate import NodRateWindow
 
 
 mp_face_mesh = mp.solutions.face_mesh
@@ -60,11 +64,16 @@ calibrator = PoseCalibrator(calibration_duration=3.0)
 nod_detector = NodDetector()
 distraction_detector = DistractionDetector()
 perclos_window = PerclosWindow(window_seconds=60.0)
-yawn_rate_window = YawnRateWindow(window_seconds=60.0)  # NEW
+yawn_rate_window = YawnRateWindow(window_seconds=60.0)
 state_machine = DrowsinessStateMachine()
 alert_system = AlertSystem()
+face_loss_detector = FaceLossDetector(loss_threshold_seconds=2.0)
+decision_logger = DecisionLogger("output_log.csv")
+nod_rate_window = NodRateWindow(window_seconds=60.0)
+NOD_ALERT_THRESHOLD = 3
+_last_nod_count = 0
 
-_last_yawn_count = 0  # NEW -- tracks perception.yawn_count between frames to detect new yawns
+_last_yawn_count = 0  # tracks perception_output["yawn_count"] between frames to detect new yawns
 
 cap = cv2.VideoCapture(0)
 
@@ -82,24 +91,24 @@ while True:
     ear_confidence = perception_output["ear_confidence"]
     is_eyes_closed = perception_output["blink_state"] == "closed"
 
-    # Approximate current blink duration from her internal state
-    # (not a field in the contract dict itself)
-    if is_eyes_closed and perception.eye_closed_start is not None:
-        blink_duration = now - perception.eye_closed_start
-    else:
-        blink_duration = 0.0
+    # blink_dur_avg is now a real contract field (rolling average of
+    # her last 20 completed blinks) -- no more reaching into her
+    # private eye_closed_start attribute to approximate it.
+    blink_duration = perception_output["blink_dur_avg"]
 
-    yawn_count = perception.yawn_count
+    # Read from her output dict, not her internal attribute -- keeps
+    # this file decoupled from her class internals.
+    yawn_count = perception_output["yawn_count"]
 
-    # NEW -- convert the lifetime cumulative yawn_count into a rolling
-    # rate. Detect new yawns since last frame and feed each one into
-    # the window, so old yawns naturally age out after 60 seconds.
+    # Convert the lifetime cumulative yawn_count into a rolling rate.
+    # Detect new yawns since last frame and feed each into the window,
+    # so old yawns naturally age out after 60 seconds.
     if yawn_count > _last_yawn_count:
         for _ in range(yawn_count - _last_yawn_count):
             yawn_rate_window.add_yawn(now)
         _last_yawn_count = yawn_count
 
-    yawn_rate = yawn_rate_window.rate_per_minute(now)  # NEW
+    yawn_rate = yawn_rate_window.rate_per_minute(now)
 
     # ---- Decision: head pose (own FaceMesh, decoupled from Perception) ----
     rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
@@ -107,6 +116,7 @@ while True:
 
     pitch = yaw = roll = 0.0
     distraction_flag = False
+    face_detected = bool(results.multi_face_landmarks)
 
     if results.multi_face_landmarks:
         for face_landmarks in results.multi_face_landmarks:
@@ -129,21 +139,54 @@ while True:
 
                 if is_plausible(pitch, yaw, roll):
                     nod_detector.update(pitch, yaw=yaw, roll=roll, now=now)
-                    distraction_flag = distraction_detector.update(yaw, now)
+                    distraction_flag = distraction_detector.update(yaw, pitch=pitch, now=now)
 
     # ---- Fusion ----
     perclos = perclos_window.update(is_eyes_closed, now)
 
     score, weights_used = compute_drowsiness_score(
         perclos=perclos,
-        yawn_rate=yawn_rate,  # CHANGED -- was yawn_count (cumulative), now yawn_rate (rolling)
+        yawn_rate=yawn_rate,
         blink_duration=blink_duration,
         nod_count=nod_detector.nod_count,
         ear_confidence=ear_confidence,
     )
 
+    face_lost_alert = face_loss_detector.update(face_detected, now)
+
+    if nod_detector.nod_count > _last_nod_count:
+        for _ in range(nod_detector.nod_count - _last_nod_count):
+            nod_rate_window.add_nod(now)
+        _last_nod_count = nod_detector.nod_count
+
+    drowsy_nod_alert = nod_rate_window.count_recent(now) >= NOD_ALERT_THRESHOLD
+
     state = state_machine.update(score, now)
-    frame, alert_fired = alert_system.update(frame, state, distraction_flag)
+    frame, alert_fired = alert_system.update(frame, state, distraction_flag,
+                                              face_lost_alert, drowsy_nod_alert, now)
+
+    # ---- Build and log the actual contract output ----
+    # Uses Perception's frame_id so Raks can align both modules'
+    # logs row-by-row.
+    pose_plausible = is_plausible(pitch, yaw, roll)
+
+    output_dict = build_output_dict(
+        frame_id=perception_output["frame_id"],
+        drowsiness_score=score,
+        system_state=state,
+        perclos=perclos,
+        yawn_count=yawn_count,
+        nod_count=nod_detector.nod_count,
+        head_pitch=pitch,
+        head_yaw=yaw,
+        head_roll=roll,
+        distraction_flag=distraction_flag,
+        alert_fired=alert_fired,
+        distraction_axis=distraction_detector.distraction_axis,
+        face_lost_alert=face_lost_alert,
+        pose_plausible=pose_plausible,
+    )
+    decision_logger.log(output_dict)
 
     # ---- HUD ----
     hud_lines = [
@@ -167,3 +210,4 @@ while True:
 
 cap.release()
 cv2.destroyAllWindows()
+decision_logger.close()

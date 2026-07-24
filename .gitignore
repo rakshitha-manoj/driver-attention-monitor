@@ -226,3 +226,6 @@ data/
 # environment
 .env
 venv/
+
+
+decision/output_log.csv
