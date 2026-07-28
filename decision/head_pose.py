@@ -20,6 +20,12 @@ class HeadPoseEstimator:
 
     def __init__(self):
         self.dist_coeffs = np.zeros((4, 1), dtype=np.float64)
+        self.last_rvec = None
+        self.last_tvec = None
+
+    def reset_tracking(self):
+        self.last_rvec = None
+        self.last_tvec = None
 
     def get_image_points(self, landmarks, width, height):
         image_points = np.array([
@@ -31,6 +37,8 @@ class HeadPoseEstimator:
             (landmarks[RIGHT_MOUTH].x * width, landmarks[RIGHT_MOUTH].y * height),
         ], dtype=np.float64)
         return image_points
+
+
 
     def get_camera_matrix(self, width, height):
         focal_length = width
@@ -67,16 +75,29 @@ class HeadPoseEstimator:
         image_points = self.get_image_points(landmarks, width, height)
         camera_matrix = self.get_camera_matrix(width, height)
 
+        # Use previous pose as initial guess to prevent 180-degree flip local minima
+        use_guess = (self.last_rvec is not None and self.last_tvec is not None)
+        rvec_guess = self.last_rvec.copy() if use_guess else np.zeros((3, 1), dtype=np.float64)
+        tvec_guess = self.last_tvec.copy() if use_guess else np.zeros((3, 1), dtype=np.float64)
+
         success, rotation_vector, translation_vector = cv2.solvePnP(
             MODEL_POINTS,
             image_points,
             camera_matrix,
             self.dist_coeffs,
+            rvec=rvec_guess,
+            tvec=tvec_guess,
+            useExtrinsicGuess=use_guess,
             flags=cv2.SOLVEPNP_ITERATIVE
         )
 
         if not success:
+            self.last_rvec = None
+            self.last_tvec = None
             return None
+
+        self.last_rvec = rotation_vector
+        self.last_tvec = translation_vector
 
         rotation_matrix, _ = cv2.Rodrigues(rotation_vector)
         pitch, yaw, roll = self.rotation_matrix_to_euler(rotation_matrix)

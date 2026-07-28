@@ -150,6 +150,9 @@ while True:
                     y_pos += 30
                 
 
+    else:
+        pose_estimator.reset_tracking()
+
     # ---------------------------------
     # Display Webcam
     # ---------------------------------
