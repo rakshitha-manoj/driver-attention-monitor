@@ -109,6 +109,12 @@ def test_clahe_brightens_dark_frame():
 
 
 # ── Calibration tests ──────────────────────────────────────────────
+# FIXED: bumped from 10 to 11 samples. perception.py's calibration-
+# complete check is `len(self.calibration_ears) > 10` (strictly
+# greater than) — with exactly 10 samples this was False, so
+# calibration never actually ran and ear_threshold stayed at the
+# untouched default (0.25) in both tests below. They were passing
+# for the wrong reason, not verifying the calibration math at all.
 
 def _calibrate(ears):
     m = PerceptionModule()
@@ -119,14 +125,23 @@ def _calibrate(ears):
     return m
 
 def test_threshold_below_mean():
-    ears = [0.30,0.31,0.29,0.30,0.32,0.28,0.31,0.30,0.29,0.31]
+    ears = [0.30,0.31,0.29,0.30,0.32,0.28,0.31,0.30,0.29,0.31,0.30]  # 11 samples
     m    = _calibrate(ears)
     assert m.ear_threshold < np.mean(ears)
 
 def test_threshold_floor_0_15():
-    ears = [0.09,0.10,0.09,0.10,0.09,0.10,0.09,0.10,0.09,0.10]
+    ears = [0.09,0.10,0.09,0.10,0.09,0.10,0.09,0.10,0.09,0.10,0.09]  # 11 samples
     m    = _calibrate(ears)
     assert m.ear_threshold >= 0.15
+
+def test_threshold_floor_actually_applied():
+    # NEW: the previous floor test could pass even with the floor
+    # clamp deleted entirely, since calibration never ran. This one
+    # uses a mean far enough under 0.15 that it only passes if the
+    # floor clamp is genuinely implemented and calibration genuinely runs.
+    ears = [0.05] * 15
+    m = _calibrate(ears)
+    assert abs(m.ear_threshold - 0.15) < 0.001, "Floor clamp should force threshold to exactly 0.15"
 
 def test_calibrated_flag():
     m = _calibrate([0.30] * 15)

@@ -227,5 +227,6 @@ data/
 .env
 venv/
 
+mlruns/
 
 decision/output_log.csv
