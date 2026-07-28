@@ -228,3 +228,5 @@ data/
 venv/
 
 mlruns/
+
+decision/output_log.csv

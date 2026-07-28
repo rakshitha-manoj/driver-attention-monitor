@@ -6,12 +6,18 @@ def _normalize(value, low, high):
 
 
 def normalize_inputs(perclos, yawn_rate, blink_duration, nod_count,
-                      yawn_rate_max=5.0, blink_duration_max=2.0,
+                      yawn_rate_max=5.0, blink_duration_max=0.6,
                       nod_count_max=5.0):
     """
     Converts raw signals into 0-1 normalized components.
     perclos is already 0-1. The *_max args are the values at which
     a component saturates to 1.0 -- placeholders, tune in Week 5.
+
+    blink_duration_max=0.6 assumes blink_duration is Hafsa's
+    blink_dur_avg (average of completed blinks: ~0.15s alert,
+    ~0.3s+ drowsy per her module). This was 2.0 when blink_duration
+    meant "current live closure duration" -- recalibrate again if
+    that input's source changes.
     """
     return {
         "perclos_normalized": max(0.0, min(1.0, perclos)),
