@@ -72,3 +72,37 @@ class PoseCalibrator:
             "yaw": pose["yaw"] - self.yaw_offset,
             "roll": pose["roll"] - self.roll_offset,
         }
+
+    def export_offsets(self):
+        """
+        Export calibration offsets for cross-session persistence.
+        Returns dict with pitch/yaw/roll offsets, or None if not calibrated.
+        """
+        if not self.is_calibrated:
+            return None
+        return {
+            "pitch": round(float(self.pitch_offset), 3),
+            "yaw": round(float(self.yaw_offset), 3),
+            "roll": round(float(self.roll_offset), 3),
+        }
+
+    def import_offsets(self, data):
+        """
+        Import calibration offsets from a previous session.
+        The imported offsets serve as a warm start; live calibration
+        will refine them.
+
+        Args:
+            data: dict with pitch, yaw, roll offset keys
+        """
+        if data is None:
+            return
+        if all(k in data for k in ("pitch", "yaw", "roll")):
+            self.pitch_offset = float(data["pitch"])
+            self.yaw_offset = float(data["yaw"])
+            self.roll_offset = float(data["roll"])
+            print(f"  Loaded historical pose offsets: "
+                  f"pitch={self.pitch_offset:.2f}, "
+                  f"yaw={self.yaw_offset:.2f}, "
+                  f"roll={self.roll_offset:.2f}")
+

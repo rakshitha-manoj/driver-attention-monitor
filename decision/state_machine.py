@@ -34,8 +34,20 @@ class DrowsinessStateMachine:
         self._above_critical_since = None
         self._below_recovery_since = None
 
-    def update(self, score, now=None):
+    def update(self, score, now=None, emergency_critical=False, emergency_warning=False):
         now = now if now is not None else time.time()
+
+        if emergency_critical:
+            self.state = self.CRITICAL
+            self._above_critical_since = now
+            self._below_recovery_since = None
+            return self.state
+
+        if emergency_warning and self.state == self.ALERT:
+            self.state = self.WARNING
+            self._above_warning_since = now
+            self._below_recovery_since = None
+            return self.state
 
         if score >= self.warning_threshold:
             self._above_warning_since = self._above_warning_since or now

@@ -1,0 +1,19 @@
+{
+  "session_duration_sec": 38.2,
+  "total_frames": 765,
+  "average_fps": 20.0,
+  "face_detection_rate": 85.9,
+  "safety_score": 94,
+  "safety_grade": "A (Alert & Focused)",
+  "drowsiness_mean_score": 4.4,
+  "drowsiness_max_score": 9.6,
+  "perclos_mean_pct": 14.5,
+  "perclos_max_pct": 100.0,
+  "total_blinks": 22,
+  "avg_blink_duration_ms": 123.7,
+  "total_yawns": 0,
+  "total_nods": 1,
+  "warning_time_pct": 0.0,
+  "critical_time_pct": 0.0,
+  "distraction_instances_pct": 2.5
+}

@@ -12,12 +12,14 @@ import cv2
 import mediapipe as mp
 import numpy as np
 import os
+import matplotlib
+matplotlib.use('Agg')  # Non-interactive backend
 import matplotlib.pyplot as plt
 from sklearn.metrics import accuracy_score, confusion_matrix, classification_report, roc_curve, auc
 from perception import compute_ear, apply_clahe
 
-CEW_OPEN_DIR   = "data/cew/openEyes"
-CEW_CLOSED_DIR = "data/cew/closedEyes"
+CEW_OPEN_DIR   = "data/cew/open"
+CEW_CLOSED_DIR = "data/cew/closed"
 RESULTS_DIR    = "results"
 EAR_THRESHOLD  = 0.25
 

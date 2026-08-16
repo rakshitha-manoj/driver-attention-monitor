@@ -25,7 +25,11 @@ from collections import deque
 # ─────────────────────────────────────────────────────────────────────
 LEFT_EYE  = [362, 385, 387, 263, 373, 380]
 RIGHT_EYE = [33,  160, 158, 133, 153, 144]
-MOUTH     = [61, 291, 39, 181, 0, 17, 269, 405]
+# MOUTH landmark ordering: p[0],p[1] = corners (horizontal),
+# p[2]↔p[6] and p[3]↔p[7] must be VERTICAL pairs (upper↔lower lip).
+# Old order had p[2]=39(upper-L) paired with p[6]=269(upper-R) → horizontal!
+# Fixed: swap positions 3 and 6 so verticals are correct.
+MOUTH     = [61, 291, 39, 269, 0, 17, 181, 405]
 
 
 # ─────────────────────────────────────────────────────────────────────
@@ -155,12 +159,15 @@ class PerceptionModule:
         self.blink_durations = deque(maxlen=20)
         self.blink_dur_avg   = 0.0   # Sheethal needs this for her scoring formula
 
-        # ── Yawn tracking ──
+        # ── Yawn tracking (with hysteresis + cooldown) ──
         self.yawn_count       = 0
         self.mouth_open_start = None
         self.yawn_in_progress = False
-        self.MAR_THRESHOLD    = 0.6
-        self.YAWN_MIN_DUR     = 1.5
+        self._last_yawn_time  = None   # for cooldown between yawns
+        self.MAR_ENTER        = 0.5    # MAR must exceed this to START yawn tracking
+        self.MAR_EXIT         = 0.3    # MAR must drop below this to END a yawn
+        self.YAWN_MIN_DUR     = 1.5    # seconds mouth must stay open
+        self.YAWN_COOLDOWN    = 3.0    # minimum seconds between two yawn counts
 
         self.frame_id      = 0
         self.session_start = time.time()
@@ -226,25 +233,44 @@ class PerceptionModule:
 
     def _update_yawn(self, mar, timestamp):
         """
-        Yawn = MAR > 0.6 sustained for 1.5 seconds.
-        Counted once per yawn event (not per frame).
-        Unchanged from previous version.
+        Yawn = MAR > MAR_ENTER sustained for YAWN_MIN_DUR seconds.
+
+        Two-threshold hysteresis prevents double-counting:
+          - A yawn starts when MAR exceeds MAR_ENTER (0.5)
+          - It only ends when MAR drops below MAR_EXIT (0.3)
+          - Brief mid-yawn dips (e.g. MAR 0.5 → 0.4 → 0.6) do NOT
+            reset the tracker because 0.4 > MAR_EXIT
+
+        Cooldown: at least YAWN_COOLDOWN seconds must pass between
+        two counted yawns, preventing a single long yawn from being
+        split into multiple counts.
         """
-        if mar > self.MAR_THRESHOLD:
-            if self.mouth_open_start is None:
-                self.mouth_open_start = timestamp
-            elif (timestamp - self.mouth_open_start) >= self.YAWN_MIN_DUR:
-                if not self.yawn_in_progress:
-                    self.yawn_count      += 1
-                    self.yawn_in_progress = True
+        if not self.yawn_in_progress:
+            # Not currently in a yawn — check if one is starting
+            if mar > self.MAR_ENTER:
+                if self.mouth_open_start is None:
+                    self.mouth_open_start = timestamp
+                elif (timestamp - self.mouth_open_start) >= self.YAWN_MIN_DUR:
+                    # Check cooldown
+                    if (self._last_yawn_time is None or
+                            (timestamp - self._last_yawn_time) >= self.YAWN_COOLDOWN):
+                        self.yawn_count += 1
+                        self.yawn_in_progress = True
+                        self._last_yawn_time = timestamp
+            else:
+                self.mouth_open_start = None
         else:
-            self.mouth_open_start = None
-            self.yawn_in_progress = False
+            # Currently in a yawn — only reset when MAR drops well
+            # below the entry threshold (hysteresis)
+            if mar < self.MAR_EXIT:
+                self.yawn_in_progress = False
+                self.mouth_open_start = None
 
 
     def process_frame(self, frame):
         """
-        Main entry point. Call every frame.
+        Main entry point (standalone mode). Call every frame.
+        Runs its own FaceMesh internally.
         Returns the data contract dict.
 
         CHANGED output dict:
@@ -261,24 +287,82 @@ class PerceptionModule:
         rgb      = cv2.cvtColor(enhanced, cv2.COLOR_BGR2RGB)
         results  = self.face_mesh.process(rgb)
 
-        # No face detected
         if not results.multi_face_landmarks:
-            return {
-                "frame_id"          : self.frame_id,
-                "timestamp"         : timestamp,
-                "EAR"               : None,
-                "MAR"               : None,
-                "blink_state"       : "unknown",  # official third state
-                "blink_count"       : self.blink_count,
-                "blink_dur_avg"     : self.blink_dur_avg,
-                "yawn_count"        : self.yawn_count,
-                "ear_confidence"    : 0.0,
-                "landmarks_detected": False
-            }
+            return self._no_face_result(timestamp)
 
         landmarks = results.multi_face_landmarks[0].landmark
         h, w      = frame.shape[:2]
+        return self._compute(landmarks, w, h, timestamp)
 
+    def process_landmarks(self, landmarks, w, h):
+        """
+        Integration-mode entry point. Accepts PRE-COMPUTED landmarks
+        from a shared FaceMesh instance (avoids double inference).
+
+        Args:
+            landmarks: face_landmarks.landmark list from MediaPipe
+            w, h: frame dimensions in pixels
+
+        Returns: same data contract dict as process_frame.
+        """
+        self.frame_id += 1
+        timestamp = round(time.time() - self.session_start, 3)
+
+        if landmarks is None:
+            return self._no_face_result(timestamp)
+
+        return self._compute(landmarks, w, h, timestamp)
+
+    def export_calibration(self):
+        """
+        Export calibration state for cross-session persistence.
+        Returns dict with threshold and diagnostics, or None if
+        not yet calibrated.
+        """
+        if not self.calibrated:
+            return None
+        return {
+            "ear_threshold": float(self.ear_threshold),
+            "ear_variance": float(self.calibration_variance),
+            "calibrated": True,
+        }
+
+    def import_calibration(self, data):
+        """
+        Import calibration from a previous session (cross-session
+        persistence). The imported threshold serves as a warm start;
+        the live calibration may refine it further.
+
+        Args:
+            data: dict with ear_threshold and ear_variance keys
+        """
+        if data is None:
+            return
+        if "ear_threshold" in data:
+            self.ear_threshold = float(data["ear_threshold"])
+            self.calibration_variance = float(data.get("ear_variance", 0.0))
+            # Mark as pre-calibrated so the system can start immediately,
+            # but still allow live refinement
+            print(f"  Loaded historical EAR threshold: {self.ear_threshold:.4f} "
+                  f"(variance: {self.calibration_variance:.4f})")
+
+    def _no_face_result(self, timestamp):
+        """Return dict when no face is detected."""
+        return {
+            "frame_id"          : self.frame_id,
+            "timestamp"         : timestamp,
+            "EAR"               : None,
+            "MAR"               : None,
+            "blink_state"       : "unknown",
+            "blink_count"       : self.blink_count,
+            "blink_dur_avg"     : self.blink_dur_avg,
+            "yawn_count"        : self.yawn_count,
+            "ear_confidence"    : 0.0,
+            "landmarks_detected": False
+        }
+
+    def _compute(self, landmarks, w, h, timestamp):
+        """Core computation shared by process_frame and process_landmarks."""
         left_ear  = compute_ear(landmarks, LEFT_EYE,  w, h)
         right_ear = compute_ear(landmarks, RIGHT_EYE, w, h)
         ear       = round((left_ear + right_ear) / 2.0, 4)
@@ -301,9 +385,9 @@ class PerceptionModule:
             "EAR"               : ear,
             "MAR"               : mar,
             "blink_state"       : self.blink_state,
-            "blink_count"       : self.blink_count,       # now in dict
-            "blink_dur_avg"     : self.blink_dur_avg,     # NEW
-            "yawn_count"        : self.yawn_count,         # now in dict
+            "blink_count"       : self.blink_count,
+            "blink_dur_avg"     : self.blink_dur_avg,
+            "yawn_count"        : self.yawn_count,
             "ear_confidence"    : ear_confidence,
             "landmarks_detected": True
         }

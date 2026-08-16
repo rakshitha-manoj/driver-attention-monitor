@@ -78,7 +78,7 @@ class HeadPoseEstimator:
         # Use previous pose as initial guess to prevent 180-degree flip local minima
         use_guess = (self.last_rvec is not None and self.last_tvec is not None)
         rvec_guess = self.last_rvec.copy() if use_guess else np.zeros((3, 1), dtype=np.float64)
-        tvec_guess = self.last_tvec.copy() if use_guess else np.zeros((3, 1), dtype=np.float64)
+        tvec_guess = self.last_tvec.copy() if use_guess else np.array([[0.0], [0.0], [1000.0]], dtype=np.float64)
 
         success, rotation_vector, translation_vector = cv2.solvePnP(
             MODEL_POINTS,
@@ -96,11 +96,14 @@ class HeadPoseEstimator:
             self.last_tvec = None
             return None
 
-        self.last_rvec = rotation_vector
-        self.last_tvec = translation_vector
-
         rotation_matrix, _ = cv2.Rodrigues(rotation_vector)
         pitch, yaw, roll = self.rotation_matrix_to_euler(rotation_matrix)
+
+        # Only update the tracking guess if the pose is physically plausible.
+        # This prevents the tracker from getting permanently stuck in a flipped state (e.g. roll ~ 180).
+        if abs(pitch) <= 70.0 and abs(yaw) <= 120.0 and abs(roll) <= 60.0:
+            self.last_rvec = rotation_vector
+            self.last_tvec = translation_vector
 
         return {
             "pitch": round(pitch, 2),
@@ -110,3 +113,45 @@ class HeadPoseEstimator:
             "translation_vector": translation_vector,
             "rotation_matrix": rotation_matrix,
         }
+
+    def draw_pose_axes(self, frame, landmarks, pose, axis_length=80):
+        """
+        Draw 3D pose direction axes on the frame at the nose position.
+        Red = X (yaw), Green = Y (pitch), Blue = Z (forward).
+        Makes head orientation immediately visible without reading text.
+        """
+        if pose is None:
+            return
+
+        height, width = frame.shape[:2]
+        nose = landmarks[1]   # landmark 1 = nose tip
+        nose_x = int(nose.x * width)
+        nose_y = int(nose.y * height)
+
+        camera_matrix = self.get_camera_matrix(width, height)
+
+        # Project 3D axis endpoints to 2D
+        axis_3d = np.float64([
+            [axis_length, 0, 0],   # X axis (red)
+            [0, axis_length, 0],   # Y axis (green)
+            [0, 0, axis_length],   # Z axis (blue, forward)
+        ])
+
+        rvec = pose.get("rotation_vector")
+        tvec = pose.get("translation_vector")
+        if rvec is None or tvec is None:
+            return
+
+        pts_2d, _ = cv2.projectPoints(
+            axis_3d, rvec, tvec,
+            camera_matrix, self.dist_coeffs)
+
+        origin = (nose_x, nose_y)
+        x_end = (int(pts_2d[0][0][0]), int(pts_2d[0][0][1]))
+        y_end = (int(pts_2d[1][0][0]), int(pts_2d[1][0][1]))
+        z_end = (int(pts_2d[2][0][0]), int(pts_2d[2][0][1]))
+
+        cv2.arrowedLine(frame, origin, x_end, (0, 0, 255), 3, tipLength=0.25)
+        cv2.arrowedLine(frame, origin, y_end, (0, 255, 0), 3, tipLength=0.25)
+        cv2.arrowedLine(frame, origin, z_end, (255, 0, 0), 3, tipLength=0.25)
+

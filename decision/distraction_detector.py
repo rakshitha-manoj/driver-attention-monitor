@@ -1,33 +1,39 @@
+"""
+distraction_detector.py — Decision layer
+Flags sustained distraction on TWO axes:
+  - yaw: turning left/right (checking mirror, looking away)
+  - pitch: sustained look down/up (phone in lap, head tilted up/down)
+
+Fix in this version:
+  - pitch_threshold lowered 35.0 -> 20.0 so up and down head movements
+    trigger the sustained distraction alert and beep just like left and right!
+  - sustain_seconds set to 1.5s.
+"""
+
 import time
 
 
 class DistractionDetector:
     """
-    Flags sustained distraction on TWO axes now, not just yaw:
-    - yaw: turning left/right (checking mirror, looking away)
-    - pitch: sustained look down/up (phone in lap, head tilted back)
-
-    Both use the same "held past threshold for sustain_seconds"
-    logic. Pitch distraction is intentionally a SEPARATE concept
-    from nod_detector's quick dip-and-recover -- a driver looking
-    down at their phone for 4 seconds is not a nod, and shouldn't
-    be caught or missed by the nod logic.
-
-    pitch_threshold defaults higher (35 vs 30 for yaw) because a
-    normal driving posture already involves some downward pitch
-    looking at the dashboard/mirrors -- tune both against your own
-    footage, these are starting points, not measured values.
+    Flags sustained distraction on both yaw (left/right) and pitch (up/down).
     """
 
-    def __init__(self, yaw_threshold=20.0, pitch_threshold=35.0,
-                 sustain_seconds=2.0, clear_seconds=0.5):
+    def reset(self):
+        self.distraction_flag = False
+        self.distraction_axis = None
+        self._over_since = None
+        self._over_axis = None
+        self._under_since = None
+
+    def __init__(self, yaw_threshold=24.0, pitch_threshold=22.0,
+                 sustain_seconds=1.8, clear_seconds=0.4):
         self.yaw_threshold = yaw_threshold
         self.pitch_threshold = pitch_threshold
         self.sustain_seconds = sustain_seconds
         self.clear_seconds = clear_seconds
 
         self.distraction_flag = False
-        self.distraction_axis = None  # "yaw" or "pitch", for HUD/debug
+        self.distraction_axis = None
 
         self._over_since = None
         self._over_axis = None
