@@ -1,0 +1,69 @@
+{
+  "cew": {
+    "total_images": 3700,
+    "open_count": 1892,
+    "closed_count": 1808,
+    "open_mean": 0.2809,
+    "open_std": 0.06,
+    "closed_mean": 0.0982,
+    "closed_std": 0.0513,
+    "default_threshold": 0.25,
+    "accuracy": 84.35,
+    "precision": 76.29,
+    "recall": 98.62,
+    "f1": 86.03,
+    "optimal_threshold": 0.185,
+    "optimal_accuracy": 93.27,
+    "roc_auc": 0.9808,
+    "face_detection_rate": 92.5
+  },
+  "yawdd": {
+    "total_frames": 9367,
+    "yawn_frames": 3386,
+    "nonyawn_frames": 5981,
+    "yawn_videos": 114,
+    "nonyawn_videos": 205,
+    "yawn_mean": 0.5869,
+    "nonyawn_mean": 0.5705,
+    "default_threshold": 0.6,
+    "accuracy": 67.26,
+    "precision": 62.28,
+    "recall": 23.89,
+    "f1": 34.54,
+    "optimal_threshold": 0.62,
+    "optimal_accuracy": 68.86,
+    "roc_auc": 0.5626
+  },
+  "nthu": {
+    "glasses": {
+      "total_images": 1000,
+      "detected": 877,
+      "detection_rate": 87.7,
+      "ear_mean": 0.2466,
+      "ear_std": 0.0518,
+      "confidence_mean": 0.0,
+      "low_confidence_pct": 100.0,
+      "accuracy_at_025": 63.6,
+      "n_samples": 877
+    },
+    "noglasses": {
+      "total_images": 1000,
+      "detected": 942,
+      "detection_rate": 94.2,
+      "ear_mean": 0.2279,
+      "ear_std": 0.0827,
+      "confidence_mean": 0.0,
+      "low_confidence_pct": 100.0,
+      "accuracy_at_025": 62.8,
+      "n_samples": 942
+    },
+    "overall": {
+      "accuracy": 63.22,
+      "precision": 63.85,
+      "recall": 68.35,
+      "f1": 66.02,
+      "roc_auc": 0.6593,
+      "total_samples": 1819
+    }
+  }
+}
