@@ -396,3 +396,11 @@ class AlertSystem:
         self._distraction_start = None
         self._last_distraction = False
         self._last_face_lost = False
+        # Cleanly reset escalation states/timers to silence alarms
+        self._last_state = "ALERT"
+        self._warning_enter_time = None
+        self._critical_enter_time = None
+        self._last_warning_tts = None
+        self._last_critical_tts = None
+        self._last_critical_alarm = None
+

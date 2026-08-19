@@ -74,50 +74,84 @@ def compute_mar(landmarks, mouth_ids, w, h):
 def apply_clahe(frame):
     """
     CLAHE — fixes uneven lighting before passing frame to MediaPipe.
+    Enhanced to handle extremely dark and very bright background lights (backlight/overexposure).
     Applied to L channel of LAB colourspace only.
     """
+    if frame is None or frame.size == 0:
+        return frame
+
+    import math
     lab = cv2.cvtColor(frame, cv2.COLOR_BGR2LAB)
     l, a, b = cv2.split(lab)
-    clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
-    l_enhanced = clahe.apply(l)
+    
+    # Calculate statistics of original L channel
+    mean_l = np.mean(l)
+    
+    # 1. Adaptive Gamma Correction to adjust overall brightness
+    # Target mean luminance is ~120.0 (out of 255)
+    safe_mean = max(1.0, mean_l)
+    gamma = math.log(120.0 / 255.0) / math.log(safe_mean / 255.0)
+    
+    # Clip gamma to a safe range [0.4, 2.2] to prevent extreme visual distortion
+    gamma = max(0.4, min(2.2, gamma))
+    
+    # Apply gamma correction lookup table
+    table = np.array([((i / 255.0) ** gamma) * 255 for i in range(256)]).astype("uint8")
+    l_corrected = cv2.LUT(l, table)
+    
+    # 2. Adaptive CLAHE clip limit based on contrast and brightness
+    mean_l_corr = np.mean(l_corrected)
+    std_l_corr = np.std(l_corrected)
+    
+    # High standard deviation indicates high-contrast backlighting (bright bg, dark face)
+    if std_l_corr > 55.0:
+        clip_limit = 4.0
+    elif mean_l_corr < 50.0:
+        clip_limit = 3.0
+    else:
+        clip_limit = 2.0
+        
+    clahe = cv2.createCLAHE(clipLimit=clip_limit, tileGridSize=(8, 8))
+    l_enhanced = clahe.apply(l_corrected)
+    
     return cv2.cvtColor(cv2.merge([l_enhanced, a, b]), cv2.COLOR_LAB2BGR)
+
+
 
 
 def compute_landmark_confidence(landmarks, eye_ids):
     """
-    ── CHANGED from previous version ──
+    Use MediaPipe's own .visibility score per landmark (0.0–1.0).
+    Visibility goes LOW when:
+      - Glasses frames physically block eye corner landmarks
+      - Extreme camera angle pushes landmarks off-screen
+      - Very dark lighting makes eye region undetectable
+    Visibility stays HIGH even when eyes are genuinely closed.
 
-    OLD code (wrong):
-        ear_confidence = round(1.0 if ear > 0.15 else 0.5, 2)
-
-    WHY IT WAS WRONG:
-        When a driver is drowsy, EAR drops to near 0.
-        Old code saw EAR < 0.15 and said "low confidence."
-        But detection was working perfectly — eyes ARE closed.
-        Drowsy = low EAR is correct, not a failure.
-
-    NEW approach:
-        Use MediaPipe's own .visibility score per landmark (0.0–1.0).
-        Visibility goes LOW when:
-          - Glasses frames physically block eye corner landmarks
-          - Extreme camera angle pushes landmarks off-screen
-          - Very dark lighting makes eye region undetectable
-        Visibility stays HIGH even when eyes are genuinely closed.
-
-        This correctly distinguishes:
-          Eyes closed (drowsy) → low EAR, HIGH confidence → detection working
-          Eyes blocked by glasses → low EAR, LOW confidence → measurement unreliable
+    If the landmark object doesn't have the visibility field explicitly populated, 
+    we fall back to 1.0 (assume fine).
     """
+    if landmarks is None:
+        return 0.0
+
     visibility_scores = []
     for idx in eye_ids:
+        if idx >= len(landmarks):
+            continue
         lm = landmarks[idx]
-        if hasattr(lm, 'visibility'):
-            visibility_scores.append(lm.visibility)
+        try:
+            # Check if visibility field is explicitly set and populated in the proto message
+            if lm.HasField('visibility'):
+                visibility_scores.append(lm.visibility)
+        except (ValueError, AttributeError):
+            pass
 
     if not visibility_scores:
-        return 1.0  # visibility not in this MediaPipe version, assume fine
+        return 1.0  # visibility not set or not in this version, assume fine
 
     mean_visibility = np.mean(visibility_scores)
+    if mean_visibility == 0.0:
+        return 1.0  # If all set to 0.0 (unpopulated default), assume fine
 
     if mean_visibility >= 0.6:
         return 1.0
@@ -125,6 +159,7 @@ def compute_landmark_confidence(landmarks, eye_ids):
         return 0.5
     else:
         return 0.2
+
 
 
 # ─────────────────────────────────────────────────────────────────────

@@ -79,3 +79,11 @@ class DrowsinessStateMachine:
             self.state = self.ALERT
 
         return self.state
+
+    def reset(self):
+        """Reset the state machine back to ALERT and clear timers."""
+        self.state = self.ALERT
+        self._above_warning_since = None
+        self._above_critical_since = None
+        self._below_recovery_since = None
+

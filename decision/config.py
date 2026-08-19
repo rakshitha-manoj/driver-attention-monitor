@@ -4,14 +4,14 @@
 
 # MediaPipe landmark indices
 
-NOSE = 1
+NOSE = 4
 CHIN = 152
 
-LEFT_EYE = 263
-RIGHT_EYE = 33
+LEFT_EYE = 33
+RIGHT_EYE = 263
 
-LEFT_MOUTH = 291
-RIGHT_MOUTH = 61
+LEFT_MOUTH = 61
+RIGHT_MOUTH = 291
 
 # Store them together for convenience
 

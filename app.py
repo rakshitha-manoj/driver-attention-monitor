@@ -319,9 +319,13 @@ def main():
 
     def on_mouse_click(event, x, y, flags, param):
         if event == cv2.EVENT_LBUTTONDOWN:
+            nonlocal smoothed_score
+            smoothed_score = 0.0
+            state_mach.reset()
             alert_sys.reset_alerts()
             distr_det.reset()
             gaze.reset()
+            print("Alert manually dismissed via mouse click.")
 
     cv2.setMouseCallback(window_name, on_mouse_click)
 
@@ -582,8 +586,16 @@ def main():
         # 9. Display
         # ═══════════════════════════════════════════════════════════
         cv2.imshow("Driver Attention Monitor", frame)
-        if cv2.waitKey(1) & 0xFF == ord('q'):
+        key = cv2.waitKey(1) & 0xFF
+        if key == ord('q'):
             break
+        elif key in (ord('s'), ord('d'), 32): # 's', 'd' or Spacebar
+            smoothed_score = 0.0
+            state_mach.reset()
+            alert_sys.reset_alerts()
+            distr_det.reset()
+            gaze.reset()
+            print("Alert manually dismissed by user key press.")
 
         if p_out["frame_id"] % 60 == 0:
             gd = "C" if 0.35<gaze_h<0.65 else ("L" if gaze_h<=0.35 else "R")
